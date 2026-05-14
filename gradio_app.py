@@ -86,6 +86,15 @@ def _parse_optional_int(raw: str | None, label: str) -> int | None:
         raise ValueError(f"{label} must be an int or blank.") from exc
 
 
+def _parse_optional_str(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text == "" or text.lower() in {"none", "null", "off", "disable", "disabled", "base"}:
+        return None
+    return text
+
+
 def _format_timings(stage_timings: list[tuple[str, float]], total_to_decode: float) -> str:
     lines = [
         "[timing] ---- request ----",
@@ -192,6 +201,7 @@ def _run_generation(
     speaker_kv_scale_raw: str,
     speaker_kv_min_t_raw: str,
     speaker_kv_max_layers_raw: str,
+    lora_adapter_raw: str,
 ) -> tuple[object, ...]:
     def stdout_log(msg: str) -> None:
         print(msg, flush=True)
@@ -221,6 +231,7 @@ def _run_generation(
     speaker_kv_max_layers = _parse_optional_int(speaker_kv_max_layers_raw, "speaker_kv_max_layers")
     seed = _parse_optional_int(seed_raw, "seed")
     manual_seconds = _parse_optional_float(seconds_raw, "seconds")
+    lora_adapter = _parse_optional_str(lora_adapter_raw)
 
     ref_wav = _resolve_ref_wav(uploaded_audio=uploaded_audio)
     no_ref = ref_wav is None
@@ -282,6 +293,7 @@ def _run_generation(
             t_schedule_mode=str(t_schedule_mode),
             sway_coeff=float(sway_coeff),
             trim_tail=True,
+            lora_adapter=lora_adapter,
         ),
         log_fn=stdout_log,
     )
@@ -458,6 +470,7 @@ def build_ui() -> gr.Blocks:
                 speaker_kv_max_layers_raw = gr.Textbox(
                     label="Speaker KV Max Layers (optional)", value=""
                 )
+            lora_adapter_raw = gr.Textbox(label="LoRA Adapter Directory (optional)", value="")
 
         generate_btn = gr.Button("Generate", variant="primary")
 
@@ -514,6 +527,7 @@ def build_ui() -> gr.Blocks:
                 speaker_kv_scale_raw,
                 speaker_kv_min_t_raw,
                 speaker_kv_max_layers_raw,
+                lora_adapter_raw,
             ],
             outputs=[*out_audios, out_log, out_timing],
         )

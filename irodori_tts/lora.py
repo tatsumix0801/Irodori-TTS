@@ -247,9 +247,32 @@ def load_lora_adapter(
     adapter_path: str | Path,
     *,
     is_trainable: bool,
+    adapter_name: str = "default",
+    torch_device: str | None = None,
 ) -> torch.nn.Module:
     _, peft_model_cls, _ = _require_peft()
-    return peft_model_cls.from_pretrained(model, str(adapter_path), is_trainable=is_trainable)
+    if isinstance(model, peft_model_cls):
+        if adapter_name not in model.peft_config:
+            model.load_adapter(
+                str(adapter_path),
+                adapter_name=adapter_name,
+                is_trainable=is_trainable,
+                torch_device=torch_device,
+            )
+        model.set_adapter(adapter_name)
+        return model
+    return peft_model_cls.from_pretrained(
+        model,
+        str(adapter_path),
+        adapter_name=adapter_name,
+        is_trainable=is_trainable,
+        torch_device=torch_device,
+    )
+
+
+def model_supports_lora_adapters(model: torch.nn.Module) -> bool:
+    _, peft_model_cls, _ = _require_peft()
+    return isinstance(model, peft_model_cls)
 
 
 def count_parameters(model: torch.nn.Module) -> tuple[int, int]:

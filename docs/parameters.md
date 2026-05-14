@@ -24,6 +24,7 @@ checkpoints, including the current VoiceDesign release.
 |-----------|---------|-------|
 | `--checkpoint` | required unless `--hf-checkpoint` is set | Local `.pt` or `.safetensors` checkpoint. Use this for converted local checkpoints or downloaded model files that you want to reference directly. |
 | `--hf-checkpoint` | required unless `--checkpoint` is set | Hugging Face repo id. The runtime downloads `model.safetensors` from the repo. |
+| `--lora-adapter` | `None` | Optional PEFT LoRA adapter directory loaded dynamically at inference time. The adapter is not merged into the base checkpoint. |
 | `--codec-repo` | `Aratako/Semantic-DACVAE-Japanese-32dim` | DACVAE codec used to encode reference audio and decode generated latents. It should normally match the checkpoint metadata. |
 
 Use either `--checkpoint` or `--hf-checkpoint`, not both.
@@ -320,6 +321,9 @@ mask, and returns `log1p(total_frames)`.
 | `lora_bias` / `--lora-bias` | `none` | Bias handling passed to PEFT: `none`, `all`, or `lora_only`. |
 | `lora_target_modules` / `--lora-target-modules` | `diffusion_attn` | Preset name, regex, or comma-separated module suffix list. |
 | `lora_modules_to_save` / `--lora-modules-to-save` | `auto` | Extra modules saved with the adapter. `auto` saves `duration_predictor` for v3 duration-enabled models. Use `none` to disable. |
+
+For inference, pass the saved adapter directory to `infer.py --lora-adapter`.
+Dynamic LoRA loading requires `--compile-model` to remain disabled.
 
 Common presets:
 

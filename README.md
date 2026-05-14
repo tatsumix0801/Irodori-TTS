@@ -141,6 +141,18 @@ uv run python infer.py \
   --output-wav outputs/sample_voice_design.wav
 ```
 
+LoRA adapter directories can be loaded dynamically at inference time without
+exporting a merged checkpoint:
+
+```bash
+uv run python infer.py \
+  --checkpoint path/to/base_model.safetensors \
+  --lora-adapter outputs/irodori_tts_lora/checkpoint_final \
+  --text "こんにちは、私はAIです。これはLoRA推論のテストです。" \
+  --ref-wav path/to/reference.wav \
+  --output-wav outputs/sample_lora.wav
+```
+
 ### Output Duration
 
 The v3 base model integrates duration prediction into inference.
@@ -357,7 +369,7 @@ LoRA adapter checkpoints can also be converted directly:
 uv run python convert_checkpoint_to_safetensors.py outputs/irodori_tts_lora/checkpoint_final
 ```
 
-LoRA adapter checkpoints are merged into the base model automatically during conversion, so the exported `.safetensors` file is directly usable for inference.
+LoRA adapter checkpoints are merged into the base model automatically during conversion, so the exported `.safetensors` file is directly usable for inference. If you do not want to merge the adapter, pass the adapter directory directly to `infer.py --lora-adapter` or the matching Gradio field.
 
 ## Project Structure
 

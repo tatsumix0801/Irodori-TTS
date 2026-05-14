@@ -78,6 +78,14 @@ def main() -> None:
             "(e.g. your-org/your-model)."
         ),
     )
+    parser.add_argument(
+        "--lora-adapter",
+        default=None,
+        help=(
+            "Optional PEFT LoRA adapter directory to load dynamically for this inference run. "
+            "The adapter is applied at runtime and is not merged into the base checkpoint."
+        ),
+    )
     parser.add_argument("--text", required=True)
     parser.add_argument(
         "--caption",
@@ -427,6 +435,7 @@ def main() -> None:
             tail_window_size=int(args.tail_window_size),
             tail_std_threshold=float(args.tail_std_threshold),
             tail_mean_threshold=float(args.tail_mean_threshold),
+            lora_adapter=None if args.lora_adapter is None else str(args.lora_adapter),
         ),
         log_fn=None,
     )

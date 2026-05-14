@@ -93,6 +93,15 @@ def _parse_optional_int(raw: str | None, label: str) -> int | None:
         raise ValueError(f"{label} must be an int or blank.") from exc
 
 
+def _parse_optional_str(raw: str | None) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if text == "" or text.lower() in {"none", "null", "off", "disable", "disabled", "base"}:
+        return None
+    return text
+
+
 def _format_timings(stage_timings: list[tuple[str, float]], total_to_decode: float) -> str:
     lines = [
         "[timing] ---- request ----",
@@ -205,6 +214,7 @@ def _run_generation(
     truncation_factor_raw: str,
     rescale_k_raw: str,
     rescale_sigma_raw: str,
+    lora_adapter_raw: str,
 ) -> tuple[object, ...]:
     def stdout_log(msg: str) -> None:
         print(msg, flush=True)
@@ -237,6 +247,7 @@ def _run_generation(
     rescale_sigma = _parse_optional_float(rescale_sigma_raw, "rescale_sigma")
     seed = _parse_optional_int(seed_raw, "seed")
     manual_seconds = _parse_optional_float(seconds_raw, "seconds")
+    lora_adapter = _parse_optional_str(lora_adapter_raw)
 
     runtime, reloaded = get_cached_runtime(runtime_key)
     if not runtime.model_cfg.use_caption_condition:
@@ -306,6 +317,7 @@ def _run_generation(
             t_schedule_mode=str(t_schedule_mode),
             sway_coeff=float(sway_coeff),
             trim_tail=True,
+            lora_adapter=lora_adapter,
         ),
         log_fn=stdout_log,
     )
@@ -483,6 +495,7 @@ def build_ui() -> gr.Blocks:
                 truncation_factor_raw = gr.Textbox(label="Truncation Factor (optional)", value="")
                 rescale_k_raw = gr.Textbox(label="Rescale k (optional)", value="")
                 rescale_sigma_raw = gr.Textbox(label="Rescale sigma (optional)", value="")
+            lora_adapter_raw = gr.Textbox(label="LoRA Adapter Directory (optional)", value="")
 
         generate_btn = gr.Button("Generate", variant="primary")
 
@@ -538,6 +551,7 @@ def build_ui() -> gr.Blocks:
                 truncation_factor_raw,
                 rescale_k_raw,
                 rescale_sigma_raw,
+                lora_adapter_raw,
             ],
             outputs=[*out_audios, out_log, out_timing],
         )

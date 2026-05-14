@@ -783,13 +783,9 @@ class DurationPredictor(nn.Module):
                 f"duration predictor attention_heads must be > 0, got {attention_heads}"
             )
         if token_init_frames <= 0:
-            raise ValueError(
-                f"duration token_init_frames must be > 0, got {token_init_frames}"
-            )
+            raise ValueError(f"duration token_init_frames must be > 0, got {token_init_frames}")
         if speaker_dim is None and speaker_fusion != "concat":
-            raise ValueError(
-                f"duration speaker fusion {speaker_fusion!r} requires speaker_dim."
-            )
+            raise ValueError(f"duration speaker fusion {speaker_fusion!r} requires speaker_dim.")
         if architecture == "token_sum_adarn_zero_no_aux" and speaker_dim is None:
             raise ValueError("token_sum_adarn_zero_no_aux requires speaker_dim.")
         if architecture == "token_sum_adarn_zero_no_aux" and speaker_fusion != "adarn_zero":
@@ -904,9 +900,7 @@ class DurationPredictor(nn.Module):
     ) -> torch.Tensor:
         if self.null_speaker is None or self.speaker_dim is None:
             raise RuntimeError("Duration speaker modules are missing.")
-        null_vec = self.null_speaker.to(device=device, dtype=dtype)[None, :].expand(
-            batch_size, -1
-        )
+        null_vec = self.null_speaker.to(device=device, dtype=dtype)[None, :].expand(batch_size, -1)
         if speaker_state is None:
             return null_vec
         if speaker_state.ndim != 3 or speaker_state.shape[0] != batch_size:
@@ -964,8 +958,8 @@ class DurationPredictor(nn.Module):
 
     def forward(
         self,
-        *,
         text_state: torch.Tensor,
+        *,
         text_mask: torch.Tensor,
         aux_features: torch.Tensor,
         speaker_state: torch.Tensor | None = None,
@@ -974,13 +968,11 @@ class DurationPredictor(nn.Module):
     ) -> torch.Tensor:
         if text_state.ndim != 3 or text_state.shape[-1] != self.text_dim:
             raise ValueError(
-                f"text_state must have shape (B, S, {self.text_dim}), "
-                f"got {tuple(text_state.shape)}"
+                f"text_state must have shape (B, S, {self.text_dim}), got {tuple(text_state.shape)}"
             )
         if aux_features.ndim != 2 or aux_features.shape[1] != self.aux_dim:
             raise ValueError(
-                f"aux_features must have shape (B, {self.aux_dim}), "
-                f"got {tuple(aux_features.shape)}"
+                f"aux_features must have shape (B, {self.aux_dim}), got {tuple(aux_features.shape)}"
             )
         if aux_features.shape[0] != text_state.shape[0]:
             raise ValueError(
@@ -1038,9 +1030,7 @@ class DurationPredictor(nn.Module):
             raise ValueError("has_speaker is required for speaker-conditioned duration prediction.")
         has_speaker = has_speaker.to(device=text_vec.device, dtype=torch.bool)
         if has_speaker.ndim != 1 or has_speaker.shape[0] != text_vec.shape[0]:
-            raise ValueError(
-                f"has_speaker must have shape (B,), got {tuple(has_speaker.shape)}"
-            )
+            raise ValueError(f"has_speaker must have shape (B,), got {tuple(has_speaker.shape)}")
         speaker_vec = self._speaker_vec(
             batch_size=text_vec.shape[0],
             device=text_vec.device,
@@ -1470,7 +1460,7 @@ class TextToLatentRFDiT(nn.Module):
             )
 
         pred = self.duration_predictor(
-            text_state=text_state.detach(),
+            text_state.detach(),
             text_mask=text_mask,
             aux_features=duration_features,
             speaker_state=None if speaker_state is None else speaker_state.detach(),

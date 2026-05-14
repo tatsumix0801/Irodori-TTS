@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import gc
+import hashlib
 import json
 import math
 import secrets
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
 import torchaudio
@@ -18,7 +21,7 @@ from safetensors.torch import load_file as load_safetensors_file
 from .codec import DACVAECodec, patchify_latent, unpatchify_latent
 from .config import ModelConfig
 from .duration import build_duration_features
-from .lora import checkpoint_state_uses_lora
+from .lora import checkpoint_state_uses_lora, is_lora_adapter_dir, load_lora_adapter
 from .model import TextToLatentRFDiT
 from .rf import sample_euler_rf_cfg
 from .text_normalization import normalize_text
@@ -204,6 +207,7 @@ class SamplingRequest:
     tail_window_size: int = 20
     tail_std_threshold: float = 0.05
     tail_mean_threshold: float = 0.1
+    lora_adapter: str | None = None
 
 
 @dataclass
@@ -235,6 +239,30 @@ def _maybe_compile_inference_model(
         **compile_kwargs,
     )
     return model
+
+
+def _move_inference_module(
+    module: torch.nn.Module,
+    *,
+    device: torch.device,
+    dtype: torch.dtype,
+) -> torch.nn.Module:
+    module.to(device=device)
+    with torch.no_grad():
+        for param in module.parameters():
+            if param.is_floating_point() and param.dtype != dtype:
+                param.data = param.data.to(device=device, dtype=dtype)
+                if param.grad is not None:
+                    param.grad.data = param.grad.data.to(device=device, dtype=dtype)
+        for child in module.modules():
+            for name, buffer in child._buffers.items():
+                if buffer is None:
+                    continue
+                if buffer.is_floating_point() and buffer.dtype != dtype:
+                    child._buffers[name] = buffer.to(device=device, dtype=dtype)
+                elif buffer.device != device:
+                    child._buffers[name] = buffer.to(device=device)
+    return module
 
 
 def resolve_runtime_dtype(*, precision: str, device: torch.device) -> torch.dtype:
@@ -423,6 +451,8 @@ class InferenceRuntime:
         self.default_caption_max_len = default_caption_max_len
         self.watermarker = SilentCipherWatermarker(device=str(self.codec_device))
         self._infer_lock = threading.Lock()
+        self._model_dtype = next(self.model.parameters()).dtype
+        self._lora_adapter_names: dict[str, str] = {}
 
     @classmethod
     def from_key(cls, key: RuntimeKey) -> InferenceRuntime:
@@ -444,7 +474,7 @@ class InferenceRuntime:
 
         model = TextToLatentRFDiT(model_cfg).to(model_device)
         model.load_state_dict(model_state)
-        model = model.to(dtype=model_dtype)
+        model = _move_inference_module(model, device=model_device, dtype=model_dtype)
         model.eval()
         model = _maybe_compile_inference_model(
             model,
@@ -511,6 +541,96 @@ class InferenceRuntime:
             default_text_max_len=default_text_max_len,
             default_caption_max_len=default_caption_max_len,
         )
+
+    def _resolve_lora_adapter_path(self, adapter_path: str | None) -> str | None:
+        if adapter_path is None:
+            return None
+        raw = str(adapter_path).strip()
+        if raw.lower() in {"", "none", "null", "off", "disable", "disabled", "base"}:
+            return None
+
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            raise FileNotFoundError(f"LoRA adapter directory not found: {path}")
+        if not is_lora_adapter_dir(path):
+            raise ValueError(
+                f"LoRA adapter directory must contain adapter_config.json and adapter weights: {path}"
+            )
+        return str(path.resolve())
+
+    @staticmethod
+    def _adapter_name_for_path(path: str) -> str:
+        digest = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16]
+        return f"runtime_{digest}"
+
+    def _prepare_lora_for_request(
+        self,
+        adapter_path: str | None,
+        *,
+        messages: list[str],
+        stage_timings: list[tuple[str, float]],
+        log_fn: Callable[[str], None],
+    ) -> Any:
+        should_time = adapter_path is not None and str(adapter_path).strip() != ""
+        t0 = _measure_start(self.model_device) if should_time else None
+        try:
+            return self._prepare_lora_for_request_inner(
+                adapter_path,
+                messages=messages,
+                log_fn=log_fn,
+            )
+        finally:
+            if t0 is not None:
+                stage_sec = _measure_end(self.model_device, t0)
+                stage_timings.append(("prepare_lora", stage_sec))
+                log_fn(f"[runtime] prepare_lora: {stage_sec * 1000.0:.1f} ms")
+
+    def _prepare_lora_for_request_inner(
+        self,
+        adapter_path: str | None,
+        *,
+        messages: list[str],
+        log_fn: Callable[[str], None],
+    ) -> Any:
+        resolved_path = self._resolve_lora_adapter_path(adapter_path)
+        if resolved_path is None:
+            disable_adapter = getattr(self.model, "disable_adapter", None)
+            if callable(disable_adapter):
+                msg = "info: dynamic LoRA disabled for this request; using base model."
+                messages.append(msg)
+                log_fn(msg)
+                return disable_adapter()
+            return nullcontext()
+
+        if self.key.compile_model:
+            raise RuntimeError("Dynamic LoRA loading is not compatible with compile_model=True.")
+
+        adapter_name = self._lora_adapter_names.get(resolved_path)
+        if adapter_name is None:
+            adapter_name = self._adapter_name_for_path(resolved_path)
+            msg = f"info: loading LoRA adapter: {resolved_path}"
+            messages.append(msg)
+            log_fn(msg)
+        else:
+            msg = f"info: using cached LoRA adapter: {resolved_path}"
+            messages.append(msg)
+            log_fn(msg)
+
+        self.model = load_lora_adapter(
+            self.model,
+            resolved_path,
+            is_trainable=False,
+            adapter_name=adapter_name,
+            torch_device=str(self.model_device),
+        )
+        self._lora_adapter_names[resolved_path] = adapter_name
+        self.model = _move_inference_module(
+            self.model,
+            device=self.model_device,
+            dtype=self._model_dtype,
+        )
+        self.model.eval()
+        return nullcontext()
 
     def _load_reference_latent(
         self,
@@ -593,7 +713,8 @@ class InferenceRuntime:
             ref_latent = ref_latent[:, :max_ref_latent_steps]
 
         ref_latent_patched = patchify_latent(ref_latent, self.model_cfg.latent_patch_size).to(
-            self.model_device
+            device=self.model_device,
+            dtype=runtime_dtype,
         )
         if ref_latent_patched.shape[1] == 0:
             raise ValueError(
@@ -750,7 +871,16 @@ class InferenceRuntime:
             _log(f"[runtime] using seed: {used_seed}")
         post_load_t0 = _measure_start(self.model_device, self.codec_device)
 
-        with self._infer_lock, torch.inference_mode():
+        with (
+            self._infer_lock,
+            self._prepare_lora_for_request(
+                req.lora_adapter,
+                messages=messages,
+                stage_timings=stage_timings,
+                log_fn=_log,
+            ),
+            torch.inference_mode(),
+        ):
             t0 = _measure_start(self.model_device)
             text_ids, text_mask = self.tokenizer.batch_encode(
                 [normalized_text] * num_candidates,
