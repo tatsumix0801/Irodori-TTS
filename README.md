@@ -57,7 +57,32 @@ cd Irodori-TTS
 uv sync
 ```
 
-**Note**: For Linux/Windows with CUDA, PyTorch is automatically installed from the cu128 index. For macOS (MPS) or CPU-only usage, `uv sync` will install the default PyTorch build.
+**Compatibility note**: `uv sync` installs PyTorch from the default PyPI
+resolution path. To explicitly use the PyTorch CUDA 12.8 index on NVIDIA GPUs,
+run `uv sync --extra cu128`.
+
+If you want to explicitly select a PyTorch backend, use one of the backend
+extras below:
+
+```bash
+# NVIDIA CUDA 12.8 on Linux/Windows
+uv sync --extra cu128
+
+# AMD ROCm on Linux/WSL
+uv sync --extra rocm
+
+# CPU-only, or macOS CPU/MPS via PyPI
+uv sync --extra cpu
+```
+
+The PyTorch backend extras are mutually exclusive. The `cu128` extra uses the
+PyTorch CUDA 12.8 index, and the `rocm` extra uses the PyTorch ROCm index on
+Linux. The `cpu` extra uses the CPU PyTorch index on Linux/Windows and falls
+back to the standard PyPI PyTorch wheels on macOS.
+
+The `rocm` extra includes `pytorch-triton-rocm` because `triton-rocm` alone does
+not provide `triton.language` for the `transformers` to `torch._dynamo` import
+path. This was validated with AMD GPU inference.
 
 ## Quick Start
 
