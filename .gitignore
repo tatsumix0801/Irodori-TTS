@@ -219,3 +219,17 @@ gradio_outputs/
 gradio_outputs_voicedesign/
 outputs/
 data/
+voice_build/
+inbox/
+
+# Local assistant/editor tool state
+.claude/
+.omc/
+.serena/
+.specstory/
+.vscode/
+.cursorindexingignore
+
+# Local model weights and experiment run artifacts
+checkpoints/
+docs/harness/
