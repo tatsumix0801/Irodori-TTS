@@ -124,9 +124,9 @@ class TrainConfig:
     manifest_path: str = ""
     output_dir: str = "outputs"
     batch_size: int = 8
-    num_workers: int = 2
-    dataloader_persistent_workers: bool = False
-    dataloader_prefetch_factor: int = 2
+    num_workers: int = 8
+    dataloader_persistent_workers: bool = True
+    dataloader_prefetch_factor: int = 4
     allow_tf32: bool = False
     compile_model: bool = False
     gradient_checkpointing: bool = False

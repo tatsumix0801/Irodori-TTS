@@ -270,6 +270,8 @@ uv run --no-sync python infer.py \
 
 ### Additional Inference Notes
 
+`infer.py` defaults `--model-device`/`--codec-device` to `cpu` (CPU inference runs at roughly GPU speed for this model); pass `--model-device cuda --codec-device cuda` explicitly to use a GPU.
+
 For tuning guidance and detailed explanations of inference options, see the
 [Parameter Guide](docs/parameters.md).
 

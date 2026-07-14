@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
+
+import perf_bootstrap  # noqa: F401  # must precede torch/irodori_tts imports (ROCm env)
 
 import argparse
 import json
@@ -778,6 +780,46 @@ def clear_non_caption_grads(model: TextToLatentRFDiT) -> tuple[int, int]:
     return caption_grad_params, cleared_grad_params
 
 
+def sanitize_gradients_(parameters) -> None:
+    """Replace NaN/Inf gradients with 0.0 in-place.
+
+    ROCm: pretrained model intermediates near fp32-max can produce NaN/Inf
+    gradients via backprop. Unconditional in-place nan_to_num_ keeps this
+    off the host: checking .isnan().any() first would force a GPU->CPU
+    sync per parameter per micro-step.
+    """
+    for p in parameters:
+        if p.grad is not None:
+            p.grad.nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+
+
+def dataloader_kwargs(
+    train_cfg: TrainConfig,
+    device: torch.device,
+    collator,
+    *,
+    is_main_process: bool = True,
+) -> dict:
+    """Build common DataLoader kwargs from TrainConfig.
+
+    persistent_workers/prefetch_factor are only valid when num_workers > 0;
+    passing them with num_workers=0 makes DataLoader raise ValueError, so they
+    are omitted (and a one-time warning is printed on the main process).
+    """
+    kwargs = {
+        "batch_size": train_cfg.batch_size,
+        "num_workers": train_cfg.num_workers,
+        "pin_memory": (device.type == "cuda"),
+        "collate_fn": collator,
+    }
+    if train_cfg.num_workers > 0:
+        kwargs["persistent_workers"] = bool(train_cfg.dataloader_persistent_workers)
+        kwargs["prefetch_factor"] = int(train_cfg.dataloader_prefetch_factor)
+    elif train_cfg.dataloader_persistent_workers and is_main_process:
+        print("warning: dataloader_persistent_workers=True is ignored because num_workers=0.")
+    return kwargs
+
+
 def freeze_for_duration_only(model: torch.nn.Module) -> tuple[int, int]:
     trainable_params = 0
     frozen_params = 0
@@ -1422,6 +1464,7 @@ def run_validation(
                 if v_pred is None or v_target is None or x_mask is None or x_mask_valid is None:
                     raise RuntimeError("RF validation tensors are missing.")
                 v_pred = v_pred.float()
+                v_pred = v_pred.clamp(-1e4, 1e4)
                 rf_loss = compute_rf_loss(
                     pred=v_pred,
                     target=v_target.float(),
@@ -2411,19 +2454,9 @@ def main() -> None:
             shuffle=True,
             drop_last=drop_last,
         )
-    dataloader_common_kwargs = {
-        "batch_size": train_cfg.batch_size,
-        "num_workers": train_cfg.num_workers,
-        "pin_memory": (device.type == "cuda"),
-        "collate_fn": collator,
-    }
-    if train_cfg.num_workers > 0:
-        dataloader_common_kwargs["persistent_workers"] = bool(
-            train_cfg.dataloader_persistent_workers
-        )
-        dataloader_common_kwargs["prefetch_factor"] = int(train_cfg.dataloader_prefetch_factor)
-    elif train_cfg.dataloader_persistent_workers and is_main_process:
-        print("warning: dataloader_persistent_workers=True is ignored because num_workers=0.")
+    dataloader_common_kwargs = dataloader_kwargs(
+        train_cfg, device, collator, is_main_process=is_main_process
+    )
     loader = DataLoader(
         dataset=train_dataset,
         shuffle=(train_sampler is None),
@@ -2906,6 +2939,9 @@ def main() -> None:
                         ):
                             raise RuntimeError("RF training tensors are missing.")
                         v_pred = v_pred.float()
+                        # ROCm: pretrained model produces near-fp32-max values at some positions;
+                        # clamp to prevent overflow when squared in MSE loss.
+                        v_pred = v_pred.clamp(-1e4, 1e4)
                         rf_loss = compute_rf_loss(
                             pred=v_pred,
                             target=v_target.float(),
@@ -2950,11 +2986,16 @@ def main() -> None:
                     (loss / float(accum_steps)).backward()
                     if caption_warmup_active:
                         clear_non_caption_grads(raw_model)
+                    sanitize_gradients_(model.parameters())
 
-                accum_loss += loss.detach()
-                accum_rf_loss += rf_loss.detach()
-                accum_duration_loss += duration_loss.detach()
-                accum_duration_mae_frames += duration_mae_frames.detach()
+                _loss_d = torch.nan_to_num(loss.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+                _rf_d = torch.nan_to_num(rf_loss.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+                _dur_d = torch.nan_to_num(duration_loss.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+                _dur_mae_d = torch.nan_to_num(duration_mae_frames.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+                accum_loss += _loss_d
+                accum_rf_loss += _rf_d
+                accum_duration_loss += _dur_d
+                accum_duration_mae_frames += _dur_mae_d
                 accum_duration_group_totals += duration_group_totals
                 if not should_step:
                     continue

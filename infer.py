@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
+
+import perf_bootstrap  # noqa: F401  # must precede torch/irodori_tts imports (ROCm env)
 
 import argparse
 import math
@@ -11,7 +13,6 @@ from irodori_tts.inference_runtime import (
     InferenceRuntime,
     RuntimeKey,
     SamplingRequest,
-    default_runtime_device,
     resolve_cfg_scales,
     save_wav,
 )
@@ -95,8 +96,13 @@ def main() -> None:
     parser.add_argument("--output-wav", default="output.wav")
     parser.add_argument(
         "--model-device",
-        default=default_runtime_device(),
-        help="Model inference device (e.g. cuda, mps, cpu).",
+        default="cpu",
+        help=(
+            "Model inference device (e.g. cuda, mps, cpu). Defaults to cpu: on a "
+            "single-iGPU machine, GPU compute for inference contends with the "
+            "display engine and CPU inference runs at roughly the same speed. "
+            "Pass --model-device cuda explicitly to use the GPU."
+        ),
     )
     parser.add_argument(
         "--model-precision",
@@ -106,8 +112,12 @@ def main() -> None:
     )
     parser.add_argument(
         "--codec-device",
-        default=default_runtime_device(),
-        help="Codec device for reference encode/decode (e.g. cuda, mps, cpu).",
+        default="cpu",
+        help=(
+            "Codec device for reference encode/decode (e.g. cuda, mps, cpu). "
+            "Defaults to cpu for the same reason as --model-device; pass "
+            "--codec-device cuda explicitly to use the GPU."
+        ),
     )
     parser.add_argument(
         "--codec-precision",
@@ -370,6 +380,9 @@ def main() -> None:
         ),
     )
     args = parser.parse_args()
+
+    n_threads = perf_bootstrap.configure_cpu_threads()
+    print(f"[perf] torch cpu threads: {n_threads}", flush=True)
 
     checkpoint_path = _resolve_checkpoint_path(args)
 

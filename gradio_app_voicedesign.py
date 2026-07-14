@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-from __future__ import annotations
+from __future__ import annotations  # noqa: I001
+
+import perf_bootstrap  # noqa: F401  # must precede torch/irodori_tts imports (ROCm env)
 
 import argparse
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -9,6 +12,12 @@ import gradio as gr
 from huggingface_hub import hf_hub_download
 
 from irodori_tts.gradio_emoji_palette import EMOJI_PALETTE_CSS, build_emoji_palette
+from irodori_tts.gradio_runtime import (
+    gradio_device_note,
+    gradio_precision_note,
+    gradio_safe_device,
+    gradio_safe_precision,
+)
 from irodori_tts.inference_runtime import (
     RuntimeKey,
     SamplingRequest,
@@ -23,6 +32,16 @@ from irodori_tts.speaker_inversion import is_speaker_inversion_safetensors_path
 
 MAX_GRADIO_CANDIDATES = 32
 GRADIO_AUDIO_COLS_PER_ROW = 8
+
+
+@dataclass
+class _PerfOptions:
+    decode_mode: str = "sequential"
+    compile_model: bool = False
+    compile_dynamic: bool = False
+
+
+_PERF = _PerfOptions()
 
 
 def _default_checkpoint() -> str:
@@ -49,11 +68,11 @@ def _default_checkpoint() -> str:
 
 
 def _default_model_device() -> str:
-    return default_runtime_device()
+    return gradio_safe_device(default_runtime_device())
 
 
 def _default_codec_device() -> str:
-    return default_runtime_device()
+    return gradio_safe_device(default_runtime_device())
 
 
 def _precision_choices_for_device(device: str) -> list[str]:
@@ -146,16 +165,48 @@ def _build_runtime_key(
     codec_precision: str,
 ) -> RuntimeKey:
     checkpoint_path = _resolve_checkpoint_path(checkpoint)
+    effective_model_device = gradio_safe_device(str(model_device))
+    effective_codec_device = gradio_safe_device(str(codec_device))
+    effective_model_precision = gradio_safe_precision(effective_model_device, str(model_precision))
+    effective_codec_precision = gradio_safe_precision(effective_codec_device, str(codec_precision))
     return RuntimeKey(
         checkpoint=checkpoint_path,
-        model_device=str(model_device),
+        model_device=effective_model_device,
         codec_repo="Aratako/Semantic-DACVAE-Japanese-32dim",
-        model_precision=str(model_precision),
-        codec_device=str(codec_device),
-        codec_precision=str(codec_precision),
-        compile_model=False,
-        compile_dynamic=False,
+        model_precision=effective_model_precision,
+        codec_device=effective_codec_device,
+        codec_precision=effective_codec_precision,
+        compile_model=_PERF.compile_model,
+        compile_dynamic=_PERF.compile_dynamic,
     )
+
+
+def _runtime_device_messages(
+    *,
+    runtime_key: RuntimeKey,
+    requested_model_device: str,
+    requested_codec_device: str,
+    requested_model_precision: str,
+    requested_codec_precision: str,
+) -> list[str]:
+    messages: list[str] = []
+    model_note = gradio_device_note("model", requested_model_device, runtime_key.model_device)
+    if model_note is not None:
+        messages.append(model_note)
+    codec_note = gradio_device_note("codec", requested_codec_device, runtime_key.codec_device)
+    if codec_note is not None:
+        messages.append(codec_note)
+    model_precision_note = gradio_precision_note(
+        "model", requested_model_precision, runtime_key.model_precision
+    )
+    if model_precision_note is not None:
+        messages.append(model_precision_note)
+    codec_precision_note = gradio_precision_note(
+        "codec", requested_codec_precision, runtime_key.codec_precision
+    )
+    if codec_precision_note is not None:
+        messages.append(codec_precision_note)
+    return messages
 
 
 def _describe_runtime(
@@ -176,7 +227,13 @@ def _describe_runtime(
     status = (
         "loaded model into memory" if reloaded else "model already loaded; reused existing runtime"
     )
-    notes: list[str] = []
+    notes: list[str] = _runtime_device_messages(
+        runtime_key=runtime_key,
+        requested_model_device=model_device,
+        requested_codec_device=codec_device,
+        requested_model_precision=model_precision,
+        requested_codec_precision=codec_precision,
+    )
     if not runtime.model_cfg.use_caption_condition:
         notes.append(
             "warning: this checkpoint does not enable caption conditioning. Use gradio_app.py for reference-audio inference."
@@ -267,6 +324,13 @@ def _run_generation(
     lora_adapter = _parse_optional_str(lora_adapter_raw)
 
     runtime, reloaded = get_cached_runtime(runtime_key)
+    device_messages = _runtime_device_messages(
+        runtime_key=runtime_key,
+        requested_model_device=model_device,
+        requested_codec_device=codec_device,
+        requested_model_precision=model_precision,
+        requested_codec_precision=codec_precision,
+    )
     if not runtime.model_cfg.use_caption_condition:
         raise ValueError(
             "Loaded checkpoint does not enable caption conditioning. Use gradio_app.py for the original reference-audio model."
@@ -277,14 +341,16 @@ def _run_generation(
         ref_wav_path = None
 
     stdout_log(f"[gradio-caption] runtime: {'reloaded' if reloaded else 'reused'}")
+    for message in device_messages:
+        stdout_log(f"[gradio-caption] {message}")
     stdout_log(
         (
             "[gradio-caption] request: model_device={} model_precision={} codec_device={} codec_precision={} "
             "mode={} schedule={} sway_coeff={} seconds={} duration_scale={} steps={} seed={} candidates={}"
         ).format(
-            model_device,
+            runtime_key.model_device,
             model_precision,
-            codec_device,
+            runtime_key.codec_device,
             codec_precision,
             cfg_guidance_mode,
             t_schedule_mode,
@@ -314,7 +380,7 @@ def _run_generation(
             ref_normalize_db=-16.0,
             ref_ensure_max=True,
             num_candidates=requested_candidates,
-            decode_mode="sequential",
+            decode_mode=_PERF.decode_mode,
             seconds=manual_seconds,
             duration_scale=float(duration_scale),
             max_ref_seconds=30.0,
@@ -362,6 +428,7 @@ def _run_generation(
         f"seed_used: {result.used_seed}",
         f"candidates: {len(result.audios)}",
         *[f"saved[{i}]: {path}" for i, path in enumerate(out_paths, start=1)],
+        *device_messages,
         *result.messages,
     ]
     detail_text = "\n".join(detail_lines)
@@ -614,7 +681,7 @@ def build_ui() -> gr.Blocks:
     return demo
 
 
-def main() -> None:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Gradio app for caption-conditioned Irodori-TTS checkpoints."
     )
@@ -622,7 +689,46 @@ def main() -> None:
     parser.add_argument("--server-port", type=int, default=7861)
     parser.add_argument("--share", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument(
+        "--decode-mode",
+        choices=["sequential", "batch"],
+        default="sequential",
+        help=(
+            "Codec decode mode. "
+            "'sequential': decode each candidate one-by-one (lower VRAM), "
+            "'batch': decode all candidates at once (faster, higher VRAM)."
+        ),
+    )
+    parser.add_argument(
+        "--compile-model",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable torch.compile for core inference methods (default: disabled).",
+    )
+    parser.add_argument(
+        "--compile-dynamic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use dynamic=True for torch.compile (default: disabled).",
+    )
+    return parser
+
+
+def main() -> None:
+    n_threads = perf_bootstrap.configure_cpu_threads()
+    print(f"[perf] torch cpu threads: {n_threads}", flush=True)
+
+    parser = build_arg_parser()
     args = parser.parse_args()
+
+    _PERF.decode_mode = args.decode_mode
+    _PERF.compile_model = bool(args.compile_model)
+    _PERF.compile_dynamic = bool(args.compile_dynamic)
+    print(
+        f"[gradio-caption] perf: decode_mode={_PERF.decode_mode} "
+        f"compile_model={_PERF.compile_model} compile_dynamic={_PERF.compile_dynamic}",
+        flush=True,
+    )
 
     demo = build_ui()
     demo.queue(default_concurrency_limit=1)
