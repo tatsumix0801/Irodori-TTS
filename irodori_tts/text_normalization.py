@@ -23,6 +23,17 @@ REGEX_REPLACE_MAP = {
     re.compile(r"…{3,}"): "……",
 }
 
+PRONUNCIATION_REPLACE_MAP = {
+    re.compile(r"genspark", flags=re.IGNORECASE): "ジェン・スパーク",
+    re.compile(r"claude", flags=re.IGNORECASE): "クロード",
+}
+
+JAPANESE_CHAR_CLASS = r"ぁ-んァ-ヶー一-龯々〆〤"
+JAPANESE_ADJACENT_SPACE_PATTERNS = (
+    re.compile(rf"(?<=[{JAPANESE_CHAR_CLASS}])\s+(?=[{JAPANESE_CHAR_CLASS}A-Za-z0-9])"),
+    re.compile(rf"(?<=[A-Za-z0-9])\s+(?=[{JAPANESE_CHAR_CLASS}])"),
+)
+
 
 def strip_outer_brackets(text: str) -> str:
     pairs = {"「": "」", "『": "』", "（": "）", "【": "】", "(": ")"}
@@ -67,6 +78,12 @@ def normalize_text(text: str) -> str:
     text = strip_outer_brackets(text)
 
     text = unicodedata.normalize("NFKC", text)
+
+    for pattern, replacement in PRONUNCIATION_REPLACE_MAP.items():
+        text = pattern.sub(replacement, text)
+
+    for pattern in JAPANESE_ADJACENT_SPACE_PATTERNS:
+        text = pattern.sub("", text)
 
     text = text.replace("...", "…")
     text = text.replace("..", "…")

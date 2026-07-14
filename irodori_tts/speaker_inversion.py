@@ -4,12 +4,14 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from safetensors import safe_open
 from safetensors.torch import load_file as load_safetensors_file
 from safetensors.torch import save_file as save_safetensors_file
 
 SPEAKER_INVERSION_UNCOND_MODES = {"mask", "noise"}
 SPEAKER_INVERSION_SAFETENSORS_SUFFIX = ".speaker.safetensors"
 SPEAKER_EMBEDDING_KEY = "speaker_embedding"
+SPEAKER_INVERSION_PACING_PROFILE_KEY = "irodori_tts.pacing_profile"
 
 
 def normalize_speaker_embedding_tensor(
@@ -143,11 +145,24 @@ def load_speaker_inversion_payload(
     return out
 
 
+def load_speaker_inversion_metadata(path: str | Path) -> dict[str, str]:
+    source = Path(path).expanduser()
+    if not is_speaker_inversion_safetensors_path(source):
+        raise ValueError(
+            "Speaker Inversion embeddings must use the "
+            f"{SPEAKER_INVERSION_SAFETENSORS_SUFFIX!r} suffix: {source}"
+        )
+    with safe_open(str(source), framework="pt", device="cpu") as f:
+        metadata = f.metadata()
+    return dict(metadata or {})
+
+
 def save_speaker_inversion_safetensors(
     path: str | Path,
     payload: dict[str, torch.Tensor],
     *,
     dtype: torch.dtype = torch.float32,
+    metadata: dict[str, str] | None = None,
 ) -> None:
     target = Path(path)
     if not is_speaker_inversion_safetensors_path(target):
@@ -160,7 +175,7 @@ def save_speaker_inversion_safetensors(
         SPEAKER_EMBEDDING_KEY: normalized[SPEAKER_EMBEDDING_KEY].to(dtype=dtype),
     }
     target.parent.mkdir(parents=True, exist_ok=True)
-    save_safetensors_file(tensors, str(target), metadata={})
+    save_safetensors_file(tensors, str(target), metadata=dict(metadata or {}))
 
 
 def speaker_inversion_batch_tensors(

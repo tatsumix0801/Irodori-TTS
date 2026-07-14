@@ -23,8 +23,11 @@ from .config import ModelConfig
 from .duration import build_duration_features
 from .lora import checkpoint_state_uses_lora, is_lora_adapter_dir, load_lora_adapter
 from .model import TextToLatentRFDiT
+from .pacing import compress_long_internal_silences, smooth_internal_periods
 from .rf import sample_euler_rf_cfg
 from .speaker_inversion import (
+    SPEAKER_INVERSION_PACING_PROFILE_KEY,
+    load_speaker_inversion_metadata,
     load_speaker_inversion_payload,
     speaker_inversion_batch_tensors,
 )
@@ -355,6 +358,7 @@ _INFERENCE_CONFIG_KEYS = {
     "max_caption_len",
     "fixed_target_latent_steps",
 }
+SHUTEN_FLUENT_PACING_PROFILE = "shuten_fluent_v1"
 
 
 def _load_checkpoint_from_pt(
@@ -458,6 +462,13 @@ def _load_checkpoint_for_inference(
     return _load_checkpoint_from_pt(path)
 
 
+def _speaker_pacing_profile(ref_embed: str | None) -> str | None:
+    if ref_embed is None:
+        return None
+    metadata = load_speaker_inversion_metadata(ref_embed)
+    return metadata.get(SPEAKER_INVERSION_PACING_PROFILE_KEY)
+
+
 class InferenceRuntime:
     def __init__(
         self,
@@ -483,7 +494,7 @@ class InferenceRuntime:
         self.codec = codec
         self.default_text_max_len = default_text_max_len
         self.default_caption_max_len = default_caption_max_len
-        self.watermarker = SilentCipherWatermarker(device=str(self.codec_device))
+        self.watermarker = SilentCipherWatermarker(device="cpu")
         self._infer_lock = threading.Lock()
         self._model_dtype = next(self.model.parameters()).dtype
         self._lora_adapter_names: dict[str, str] = {}
@@ -858,6 +869,25 @@ class InferenceRuntime:
         normalized_text = normalize_text(raw_text).strip()
         if normalized_text == "":
             raise ValueError("text became empty after normalization.")
+        pacing_profile = None
+        if (
+            req.ref_embed is not None
+            and self.model_cfg.use_speaker_condition_resolved
+            and req.ref_wav is None
+            and req.ref_latent is None
+            and not req.no_ref
+        ):
+            pacing_profile = _speaker_pacing_profile(req.ref_embed)
+        if pacing_profile == SHUTEN_FLUENT_PACING_PROFILE:
+            smoothed_text = smooth_internal_periods(normalized_text).strip()
+            if smoothed_text != normalized_text:
+                normalized_text = smoothed_text
+                msg = (
+                    "info: applied speaker pacing profile "
+                    f"{SHUTEN_FLUENT_PACING_PROFILE!r} text smoothing."
+                )
+                messages.append(msg)
+                _log(msg)
 
         text_max_len = (
             self.default_text_max_len if req.max_text_len is None else int(req.max_text_len)
@@ -1196,6 +1226,29 @@ class InferenceRuntime:
             stage_sec = _measure_end(self.model_device, t0, self.codec_device)
             stage_timings.append(("decode_latent", stage_sec))
             _log(f"[runtime] decode_latent ({decode_mode}): {stage_sec * 1000.0:.1f} ms")
+
+            if pacing_profile == SHUTEN_FLUENT_PACING_PROFILE:
+                t0 = _measure_start(self.codec_device)
+                before_samples = [int(audio.shape[-1]) for audio in trimmed_audios]
+                trimmed_audios = [
+                    compress_long_internal_silences(
+                        audio,
+                        sample_rate=int(self.codec.sample_rate),
+                    )
+                    for audio in trimmed_audios
+                ]
+                after_samples = [int(audio.shape[-1]) for audio in trimmed_audios]
+                removed_samples = sum(before_samples) - sum(after_samples)
+                stage_sec = _measure_end(self.codec_device, t0)
+                stage_timings.append(("pacing_postprocess", stage_sec))
+                msg = (
+                    "info: applied speaker pacing profile "
+                    f"{SHUTEN_FLUENT_PACING_PROFILE!r} silence compression "
+                    f"(removed={removed_samples / float(self.codec.sample_rate):.3f}s)."
+                )
+                messages.append(msg)
+                _log(msg)
+                _log(f"[runtime] pacing_postprocess: {stage_sec * 1000.0:.1f} ms")
 
             if self.watermarker.ready:
                 t0 = _measure_start(self.codec_device)
